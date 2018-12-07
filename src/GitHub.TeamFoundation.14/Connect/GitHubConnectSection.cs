@@ -2,10 +2,9 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Globalization;
+using System.IO;
 using System.Linq;
-using System.Reactive;
 using System.Reactive.Linq;
-using System.Reactive.Subjects;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using GitHub.Api;
@@ -15,7 +14,6 @@ using GitHub.Models;
 using GitHub.Primitives;
 using GitHub.Services;
 using GitHub.Settings;
-using GitHub.UI;
 using GitHub.VisualStudio.Base;
 using GitHub.VisualStudio.Helpers;
 using GitHub.VisualStudio.UI;
@@ -30,8 +28,10 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
     public class GitHubConnectSection : TeamExplorerSectionBase, IGitHubConnectSection
     {
         static readonly ILogger log = LogManager.ForContext<GitHubConnectSection>();
+        readonly ISimpleApiClientFactory apiFactory;
+        readonly ITeamExplorerServiceHolder holder;
         readonly IPackageSettings packageSettings;
-        readonly IVSServices vsServices;
+        readonly ITeamExplorerServices teamExplorerServices;
         readonly int sectionIndex;
         readonly ILocalRepositories localRepositories;
         readonly IUsageTracker usageTracker;
@@ -87,15 +87,15 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
             private set { showRetry = value; this.RaisePropertyChange(); }
         }
 
-        IReactiveDerivedList<ILocalRepositoryModel> repositories;
-        public IReactiveDerivedList<ILocalRepositoryModel> Repositories
+        IReactiveDerivedList<LocalRepositoryModel> repositories;
+        public IReactiveDerivedList<LocalRepositoryModel> Repositories
         {
             get { return repositories; }
             private set { repositories = value; this.RaisePropertyChange(); }
         }
 
-        ILocalRepositoryModel selectedRepository;
-        public ILocalRepositoryModel SelectedRepository
+        LocalRepositoryModel selectedRepository;
+        public LocalRepositoryModel SelectedRepository
         {
             get { return selectedRepository; }
             set { selectedRepository = value; this.RaisePropertyChange(); }
@@ -103,14 +103,12 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
 
         public ICommand Clone { get; }
 
-        internal ITeamExplorerServiceHolder Holder => holder;
-
         public GitHubConnectSection(IGitHubServiceProvider serviceProvider,
             ISimpleApiClientFactory apiFactory,
             ITeamExplorerServiceHolder holder,
             IConnectionManager manager,
             IPackageSettings packageSettings,
-            IVSServices vsServices,
+            ITeamExplorerServices teamExplorerServices,
             ILocalRepositories localRepositories,
             IUsageTracker usageTracker,
             int index)
@@ -120,7 +118,7 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
             Guard.ArgumentNotNull(holder, nameof(holder));
             Guard.ArgumentNotNull(manager, nameof(manager));
             Guard.ArgumentNotNull(packageSettings, nameof(packageSettings));
-            Guard.ArgumentNotNull(vsServices, nameof(vsServices));
+            Guard.ArgumentNotNull(teamExplorerServices, nameof(teamExplorerServices));
             Guard.ArgumentNotNull(localRepositories, nameof(localRepositories));
             Guard.ArgumentNotNull(usageTracker, nameof(usageTracker));
 
@@ -129,8 +127,10 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
             IsVisible = false;
             sectionIndex = index;
 
+            this.apiFactory = apiFactory;
+            this.holder = holder;
             this.packageSettings = packageSettings;
-            this.vsServices = vsServices;
+            this.teamExplorerServices = teamExplorerServices;
             this.localRepositories = localRepositories;
             this.usageTracker = usageTracker;
 
@@ -314,7 +314,7 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
                 // so we can handle just one new entry separately
                 if (isCloning || isCreating)
                 {
-                    var newrepo = e.NewItems.Cast<ILocalRepositoryModel>().First();
+                    var newrepo = e.NewItems.Cast<LocalRepositoryModel>().First();
 
                     SelectedRepository = newrepo;
                     if (isCreating)
@@ -327,7 +327,7 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
                     try
                     {
                         // TODO: Cache the icon state.
-                        var api = await ApiFactory.Create(newrepo.CloneUrl);
+                        var api = await apiFactory.Create(newrepo.CloneUrl);
                         var repo = await api.GetRepository();
                         newrepo.SetIcon(repo.Private, repo.Fork);
                     }
@@ -343,16 +343,16 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
                 else
                 {
                     e.NewItems
-                        .Cast<ILocalRepositoryModel>()
+                        .Cast<LocalRepositoryModel>()
                         .ForEach(async r =>
                     {
-                        if (Equals(Holder.ActiveRepo, r))
+                        if (Equals(holder.TeamExplorerContext.ActiveRepository, r))
                             SelectedRepository = r;
 
                         try
                         {
                             // TODO: Cache the icon state.
-                            var api = await ApiFactory.Create(r.CloneUrl);
+                            var api = await apiFactory.Create(r.CloneUrl);
                             var repo = await api.GetRepository();
                             r.SetIcon(repo.Private, repo.Fork);
                         }
@@ -368,7 +368,7 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
             }
         }
 
-        void HandleCreatedRepo(ILocalRepositoryModel newrepo)
+        void HandleCreatedRepo(LocalRepositoryModel newrepo)
         {
             Guard.ArgumentNotNull(newrepo, nameof(newrepo));
 
@@ -377,7 +377,7 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
             ShowNotification(newrepo, msg);
         }
 
-        void HandleClonedRepo(ILocalRepositoryModel newrepo)
+        void HandleClonedRepo(LocalRepositoryModel newrepo)
         {
             Guard.ArgumentNotNull(newrepo, nameof(newrepo));
 
@@ -389,7 +389,7 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
             ShowNotification(newrepo, msg);
         }
 
-        void ShowNotification(ILocalRepositoryModel newrepo, string msg)
+        void ShowNotification(LocalRepositoryModel newrepo, string msg)
         {
             Guard.ArgumentNotNull(newrepo, nameof(newrepo));
 
@@ -459,18 +459,30 @@ namespace GitHub.VisualStudio.TeamExplorer.Connect
 
         public bool OpenRepository()
         {
-            var old = Repositories.FirstOrDefault(x => x.Equals(Holder.ActiveRepo));
+            var old = Repositories.FirstOrDefault(x => x.Equals(holder.TeamExplorerContext.ActiveRepository));
             if (!Equals(SelectedRepository, old))
             {
-                var opened = vsServices.TryOpenRepository(SelectedRepository.LocalPath);
-                if (!opened)
+                try
                 {
-                    // TryOpenRepository might fail because dir no longer exists. Let user find solution themselves.
-                    opened = ErrorHandler.Succeeded(ServiceProvider.GetSolution().OpenSolutionViaDlg(SelectedRepository.LocalPath, 1));
-                    if (!opened)
+                    var repositoryPath = SelectedRepository.LocalPath;
+                    if (Directory.Exists(repositoryPath))
                     {
-                        return false;
+                        teamExplorerServices.OpenRepository(SelectedRepository.LocalPath);
                     }
+                    else
+                    {
+                        // If directory no longer exists, let user find solution themselves
+                        var opened = ErrorHandler.Succeeded(ServiceProvider.GetSolution().OpenSolutionViaDlg(SelectedRepository.LocalPath, 1));
+                        if (!opened)
+                        {
+                            return false;
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    log.Error(e, nameof(OpenRepository));
+                    return false;
                 }
             }
 

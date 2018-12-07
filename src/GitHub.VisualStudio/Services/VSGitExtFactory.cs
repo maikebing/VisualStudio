@@ -1,12 +1,7 @@
-﻿extern alias TF14;
-extern alias TF15;
-
-using System;
+﻿using System;
 using GitHub.Logging;
+using GitHub.VisualStudio.Base;
 using Serilog;
-using Microsoft.VisualStudio.Shell;
-using VSGitExt14 = TF14.GitHub.VisualStudio.Base.VSGitExt;
-using VSGitExt15 = TF15.GitHub.VisualStudio.Base.VSGitExt;
 
 namespace GitHub.Services
 {
@@ -15,12 +10,14 @@ namespace GitHub.Services
         static readonly ILogger log = LogManager.ForContext<VSGitExtFactory>();
 
         readonly int vsVersion;
-        readonly IAsyncServiceProvider asyncServiceProvider;
+        readonly IServiceProvider serviceProvider;
+        readonly IGitService gitService;
 
-        public VSGitExtFactory(int vsVersion, IAsyncServiceProvider asyncServiceProvider)
+        public VSGitExtFactory(int vsVersion, IServiceProvider serviceProvider, IGitService gitService)
         {
             this.vsVersion = vsVersion;
-            this.asyncServiceProvider = asyncServiceProvider;
+            this.serviceProvider = serviceProvider;
+            this.gitService = gitService;
         }
 
         public IVSGitExt Create()
@@ -28,10 +25,11 @@ namespace GitHub.Services
             switch (vsVersion)
             {
                 case 14:
-                    return Create(() => new VSGitExt14(asyncServiceProvider));
+                    return Create(() => new VSGitExt14(serviceProvider, gitService));
                 case 15:
+                    return Create(() => new VSGitExt15(serviceProvider, gitService));
                 case 16:
-                    return Create(() => new VSGitExt15(asyncServiceProvider));
+                    return Create(() => new VSGitExt16(serviceProvider, gitService));
                 default:
                     log.Error("There is no IVSGitExt implementation for DTE version {Version}", vsVersion);
                     return null;

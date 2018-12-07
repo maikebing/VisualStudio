@@ -11,8 +11,10 @@ using GitHub.Exports;
 using GitHub.Logging;
 using GitHub.Services;
 using GitHub.Settings;
+using GitHub.VisualStudio.Helpers;
 using GitHub.VisualStudio.Commands;
 using GitHub.Services.Vssdk.Commands;
+using GitHub.Services.Vssdk.Services;
 using GitHub.ViewModels.GitHubPane;
 using GitHub.VisualStudio.Settings;
 using GitHub.VisualStudio.UI;
@@ -26,7 +28,7 @@ using Task = System.Threading.Tasks.Task;
 namespace GitHub.VisualStudio
 {
     [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
-    [InstalledProductRegistration("#110", "#112", AssemblyVersionInformation.Version, IconResourceID = 400)]
+    [InstalledProductRegistration("#110", "#112", AssemblyVersionInformation.Version)]
     [Guid(Guids.guidGitHubPkgString)]
     [ProvideMenuResource("Menus.ctmenu", 1)]
     [ProvideAutoLoad(Guids.UIContext_Git, PackageAutoLoadFlags.BackgroundLoad)]
@@ -126,6 +128,7 @@ namespace GitHub.VisualStudio
     [PartCreationPolicy(CreationPolicy.Shared)]
     public class ServiceProviderExports
     {
+        static readonly ILogger log = LogManager.ForContext<ServiceProviderExports>();
         readonly IServiceProvider serviceProvider;
 
         [ImportingConstructor]
@@ -149,7 +152,34 @@ namespace GitHub.VisualStudio
         [ExportForVisualStudioProcess]
         public IPackageSettings PackageSettings => GetService<IPackageSettings>();
 
-        T GetService<T>() => (T)serviceProvider.GetService(typeof(T));
+        [ExportForVisualStudioProcess]
+        public ITippingService TippingService
+        {
+            get
+            {
+                var tippingService = GetService<ITippingService>();
+                if (tippingService == null)
+                {
+                    // GetService<TippingService>() was returning null on Visual Studio 2015, so fall back to using new TippingService(...)
+                    log.Warning("Couldn't find service of type {Type}, using new TippingService(...) instead", typeof(ITippingService));
+                    tippingService = new TippingService(serviceProvider);
+                }
+
+                return tippingService;
+            }
+        }
+
+        T GetService<T>() where T : class
+        {
+            var service = (T)serviceProvider.GetService(typeof(T));
+            if (service == null)
+            {
+                log.Error("Couldn't find service of type {Type}", typeof(T));
+                return null;
+            }
+
+            return service;
+        }
     }
 
     [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
@@ -160,14 +190,17 @@ namespace GitHub.VisualStudio
     [ProvideService(typeof(IUsageService), IsAsyncQueryable = true)]
     [ProvideService(typeof(IVSGitExt), IsAsyncQueryable = true)]
     [ProvideService(typeof(IGitHubToolWindowManager))]
+    [ProvideService(typeof(ITippingService))]
     [Guid(ServiceProviderPackageId)]
     public sealed class ServiceProviderPackage : AsyncPackage, IServiceProviderPackage, IGitHubToolWindowManager
     {
         public const string ServiceProviderPackageId = "D5CE1488-DEDE-426D-9E5B-BFCCFBE33E53";
         static readonly ILogger log = LogManager.ForContext<ServiceProviderPackage>();
 
-        protected override Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
+        protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
         {
+            await CheckBindingPathsAsync();
+
             AddService(typeof(IGitHubServiceProvider), CreateService, true);
             AddService(typeof(IVSGitExt), CreateService, true);
             AddService(typeof(IUsageTracker), CreateService, true);
@@ -175,8 +208,28 @@ namespace GitHub.VisualStudio
             AddService(typeof(ILoginManager), CreateService, true);
             AddService(typeof(IGitHubToolWindowManager), CreateService, true);
             AddService(typeof(IPackageSettings), CreateService, true);
-            return Task.CompletedTask;
+            AddService(typeof(ITippingService), CreateService, true);
         }
+
+#if DEBUG
+        async Task CheckBindingPathsAsync()
+        {
+            try
+            {
+                // When running in the Exp instance, ensure there is only one active binding path.
+                // This is necessary when the regular (AllUsers) extension is also installed.
+                // See: https://github.com/github/VisualStudio/issues/2006
+                await JoinableTaskFactory.SwitchToMainThreadAsync();
+                BindingPathHelper.CheckBindingPaths(GetType().Assembly, this);
+            }
+            catch (Exception e)
+            {
+                log.Error(e, nameof(CheckBindingPathsAsync));
+            }
+        }
+#else
+        Task CheckBindingPathsAsync() => Task.CompletedTask;
+#endif
 
         public async Task<IGitHubPaneViewModel> ShowGitHubPane()
         {
@@ -243,12 +296,14 @@ namespace GitHub.VisualStudio
                 // HACK: We need to make sure this is run on the main thread. We really
                 // shouldn't be injecting a view model concern into LoginManager - this
                 // needs to be refactored. See #1398.
+#pragma warning disable VSTHRD011 // Use AsyncLazy<T>
                 var lazy2Fa = new Lazy<ITwoFactorChallengeHandler>(() =>
                     ThreadHelper.JoinableTaskFactory.Run(async () =>
                     {
                         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
                         return serviceProvider.GetService<ITwoFactorChallengeHandler>();
                     }));
+#pragma warning restore VSTHRD011 // Use AsyncLazy<T>
 
                 return new LoginManager(
                     keychain,
@@ -277,7 +332,7 @@ namespace GitHub.VisualStudio
             else if (serviceType == typeof(IVSGitExt))
             {
                 var vsVersion = ApplicationInfo.GetHostVersionInfo().FileMajorPart;
-                return new VSGitExtFactory(vsVersion, this).Create();
+                return new VSGitExtFactory(vsVersion, this, GitService.GitServiceHelper).Create();
             }
             else if (serviceType == typeof(IGitHubToolWindowManager))
             {
@@ -288,6 +343,10 @@ namespace GitHub.VisualStudio
                 await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
                 var sp = new ServiceProvider(Services.Dte as Microsoft.VisualStudio.OLE.Interop.IServiceProvider);
                 return new PackageSettings(sp);
+            }
+            else if (serviceType == typeof(ITippingService))
+            {
+                return new TippingService(this);
             }
             // go the mef route
             else

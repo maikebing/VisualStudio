@@ -21,7 +21,7 @@ namespace UnitTests.GitHub.App.ViewModels.GitHubPane
             var uri = (Uri)null;
             target.NavigationRequested.Subscribe(x => uri = x);
 
-            target.OpenItem.Execute(target.Items[1]);
+            await target.OpenItem.Execute(target.Items[1]);
 
             Assert.That(uri, Is.EqualTo(new Uri("github://pane/owner/name/pull/2")));
         }
@@ -45,7 +45,7 @@ namespace UnitTests.GitHub.App.ViewModels.GitHubPane
             IPullRequestSessionManager sessionManager = null,
             IRepositoryService repositoryService = null,
             IPullRequestService service = null,
-            ILocalRepositoryModel repository = null,
+            LocalRepositoryModel repository = null,
             IConnection connection = null)
         {
             var result = CreateTarget(sessionManager, repositoryService, service);

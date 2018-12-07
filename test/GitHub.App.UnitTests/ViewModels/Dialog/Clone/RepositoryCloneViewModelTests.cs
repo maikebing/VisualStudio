@@ -35,16 +35,19 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
             target.EnterpriseTab.DidNotReceiveWithAnyArgs().Initialize(null);
         }
 
-        [TestCase("https://github.com", false, 0)]
-        [TestCase("https://enterprise.com", false, 1)]
-        [TestCase("https://github.com", true, 2, Description = "Show URL tab for GitHub connections")]
-        [TestCase("https://enterprise.com", true, 2, Description = "Show URL tab for Enterprise connections")]
-        public async Task Default_SelectedTabIndex_For_Group(string address, bool isGroupA, int expectTabIndex)
+        [TestCase("https://github.com", null, false, 0)]
+        [TestCase("https://enterprise.com", null, false, 1)]
+        [TestCase("https://github.com", null, true, 2, Description = "Show URL tab for GitHub connections")]
+        [TestCase("https://enterprise.com", null, true, 2, Description = "Show URL tab for Enterprise connections")]
+        [TestCase("https://github.com", "https://github.com/github/visualstudio", false, 2)]
+        [TestCase("https://enterprise.com", "https://enterprise.com/owner/repo", false, 2)]
+        public async Task Default_SelectedTabIndex_For_Group(string address, string clipboardUrl, bool isGroupA, int expectTabIndex)
         {
             var cm = CreateConnectionManager(address);
             var connection = cm.Connections[0];
             var usageService = CreateUsageService(isGroupA);
             var target = CreateTarget(connectionManager: cm, usageService: usageService);
+            target.UrlTab.Url = clipboardUrl;
 
             await target.InitializeAsync(connection);
 
@@ -148,7 +151,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         }
 
         [Test]
-        public async Task Path_Is_Initialized()
+        public void Path_Is_Initialized()
         {
             var target = CreateTarget();
 
@@ -156,7 +159,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         }
 
         [Test]
-        public async Task Owner_And_Repository_Name_Is_Appended_To_Base_Path()
+        public void Owner_And_Repository_Name_Is_Appended_To_Base_Path()
         {
             var owner = "owner";
             var repo = "repo";
@@ -169,7 +172,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         }
 
         [Test]
-        public async Task PathWarning_Is_Not_Set_When_No_Repository_Selected()
+        public void PathWarning_Is_Not_Set_When_No_Repository_Selected()
         {
             var target = CreateTarget();
 
@@ -179,7 +182,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         }
 
         [Test]
-        public async Task PathWarning_Is_Set_For_Existing_File_At_Destination()
+        public void PathWarning_Is_Set_For_Existing_File_At_Destination()
         {
             var target = CreateTarget();
             SetRepository(target.GitHubTab, CreateRepositoryModel("owner", "repo"));
@@ -189,7 +192,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         }
 
         [Test]
-        public async Task PathWarning_Is_Set_For_Existing_Clone_At_Destination()
+        public void PathWarning_Is_Set_For_Existing_Clone_At_Destination()
         {
             var owner = "owner";
             var repo = "repo";
@@ -203,7 +206,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         }
 
         [Test]
-        public async Task PathWarning_Is_Set_For_Repository_With_No_Origin()
+        public void PathWarning_Is_Set_For_Repository_With_No_Origin()
         {
             var owner = "owner";
             var repo = "repo";
@@ -216,7 +219,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         }
 
         [Test]
-        public async Task PathWarning_Is_Set_For_Directory_With_No_Repository()
+        public void PathWarning_Is_Set_For_Directory_With_No_Repository()
         {
             var owner = "owner";
             var repo = "repo";
@@ -229,7 +232,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         }
 
         [Test]
-        public async Task PathWarning_Is_Set_For_Existing_Repository_At_Destination_With_Different_Remote()
+        public void PathWarning_Is_Set_For_Existing_Repository_At_Destination_With_Different_Remote()
         {
             var originalOwner = "original_Owner";
             var forkedOwner = "forked_owner";
@@ -246,7 +249,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         }
 
         [Test]
-        public async Task Repository_Name_Replaces_Last_Part_Of_Non_Base_Path()
+        public void Repository_Name_Replaces_Last_Part_Of_Non_Base_Path()
         {
             var target = CreateTarget();
 
@@ -281,7 +284,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
             Description = "Owner deleted")]
         [TestCase("c:\\base", "same/same", "c:\\base\\same\\same", "owner2/repo2", "c:\\base\\owner2\\repo2",
             Description = "Owner and repo have same name")]
-        public async Task User_Edits_Path(string defaultClonePath, string repo1, string userPath, string repo2, string expectPath)
+        public void User_Edits_Path(string defaultClonePath, string repo1, string userPath, string repo2, string expectPath)
         {
             var target = CreateTarget(defaultClonePath: defaultClonePath);
             SetRepository(target.GitHubTab, CreateRepositoryModel(repo1));
@@ -343,7 +346,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
             Assert.That(target.Open.CanExecute(null), Is.True);
         }
 
-        static void SetRepository(IRepositoryCloneTabViewModel vm, IRepositoryModel repository)
+        static void SetRepository(IRepositoryCloneTabViewModel vm, RepositoryModel repository)
         {
             vm.Repository.Returns(repository);
             vm.PropertyChanged += Raise.Event<PropertyChangedEventHandler>(
@@ -376,7 +379,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         static IRepositorySelectViewModel CreateSelectViewModel()
         {
             var result = Substitute.For<IRepositorySelectViewModel>();
-            result.Repository.Returns((IRepositoryModel)null);
+            result.Repository.Returns((RepositoryModel)null);
             result.WhenForAnyArgs(x => x.Initialize(null)).Do(_ => result.IsEnabled.Returns(true));
             return result;
         }
@@ -451,20 +454,17 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
             return usageService;
         }
 
-        static IRepositoryModel CreateRepositoryModel(string repo = "owner/repo")
+        static RepositoryModel CreateRepositoryModel(string repo = "owner/repo")
         {
             var split = repo.Split('/');
             var (owner, name) = (split[0], split[1]);
             return CreateRepositoryModel(owner, name);
         }
 
-        static IRepositoryModel CreateRepositoryModel(string owner, string name)
+        static RepositoryModel CreateRepositoryModel(string owner, string name)
         {
-            var repository = Substitute.For<IRepositoryModel>();
-            repository.Owner.Returns(owner);
-            repository.Name.Returns(name);
-            repository.CloneUrl.Returns(CreateGitHubUrl(owner, name));
-            return repository;
+            var cloneUrl = CreateGitHubUrl(owner, name);
+            return new RepositoryModel(name, cloneUrl);
         }
 
         static UriString CreateGitHubUrl(string owner, string repo)
@@ -475,7 +475,7 @@ namespace GitHub.App.UnitTests.ViewModels.Dialog.Clone
         static IRepositoryUrlViewModel CreateRepositoryUrlViewModel()
         {
             var repositoryUrlViewModel = Substitute.For<IRepositoryUrlViewModel>();
-            repositoryUrlViewModel.Repository.Returns(null as IRepositoryModel);
+            repositoryUrlViewModel.Repository.Returns(null as RepositoryModel);
             repositoryUrlViewModel.Url.Returns(string.Empty);
             return repositoryUrlViewModel;
         }
